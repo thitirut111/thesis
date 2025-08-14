@@ -3,6 +3,7 @@
 
 from burp import IBurpExtender, ITab
 from javax.swing import JPanel, JLabel
+import uiExtension
 
 class BurpExtender(IBurpExtender, ITab):
 
@@ -13,9 +14,8 @@ class BurpExtender(IBurpExtender, ITab):
         # ตั้งชื่อ Extension ใน Burp
         callbacks.setExtensionName("Thesis")
 
-        # สร้าง JPanel ที่จะเป็นเนื้อหาของแท็บ
-        self._panel = JPanel()
-        self._panel.add(JLabel("Hello from MyTab!"))
+	# ใช้งานฟังก์ชันจาก uiExtension.py
+        self._panel = uiExtension.create_panel()
 
         # เพิ่มแท็บเข้า Burp
         callbacks.addSuiteTab(self)
