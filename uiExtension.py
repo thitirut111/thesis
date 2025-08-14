@@ -30,10 +30,11 @@ def create_panel():
             output_area.setText("Running rengine...\n")
             try:
                 process = subprocess.Popen(
-                    ["python3", "run_rengine.py", target_url],
+                    ["python3", "rengineExtension.py", target_url],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT
                 )
+
                 stdout, _ = process.communicate()
                 output_area.append(stdout.decode("utf-8"))
             except Exception as e:
