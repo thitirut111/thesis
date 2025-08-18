@@ -29,8 +29,9 @@ def create_panel():
         if target_url:
             output_area.setText("Running rengine...\n")
             try:
-                process = subprocess.Popen(
-                    ["python3", "rengineExtension.py", target_url],
+                process = subprocess.Popen([
+		        "python3", "rengineExtension.py", target_url
+		    ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT
                 )
