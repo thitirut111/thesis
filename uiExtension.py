@@ -1,16 +1,26 @@
 # -*- coding: utf-8 -*-
-from javax.swing import JPanel, JLabel, JTextField, JButton, JTextArea, JScrollPane
-from java.awt import GridBagLayout, GridBagConstraints, Insets, Dimension
+# uiExtension.py
+
+from javax.swing import (
+    JPanel, JLabel, JTextField, JButton, JTextArea, JScrollPane,
+    JTable, JTabbedPane, JOptionPane, JProgressBar, BorderFactory
+)
+from javax.swing.table import DefaultTableModel, TableRowSorter
+from javax.swing.border import TitledBorder
+from java.awt import GridBagLayout, GridBagConstraints, Insets, Dimension, Font
 import subprocess
 import os, sys, json, re, time, codecs
 from threading import Thread
+from java.util import Comparator
 
-# ----- PATH SHIM -----
+# =========================
+# PATH SHIM (import helpers)
+# =========================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
-# import zap_client (stdlib/Jython-safe)
+# import zap_client (Jython safe)
 try:
     import zap_client
     _ZAP_IMPORT_ERROR = None
@@ -23,12 +33,30 @@ except Exception:
         zap_client = None
         _ZAP_IMPORT_ERROR = e
 
-# ====== CONFIG ======
-SAVE_DIR = "/home/kali/thesis/alert_dump"
-RESULT_PREFIX = "alert"     # => alert_YYYYMMDD_HHMMSS.json
-SCAN_LIMIT = 20             # max URLs to send to ZAP
+# =========================
+# GLOBAL FONTS (ใหญ่ขึ้น)
+# =========================
+BASE_FONT   = Font("SansSerif", Font.PLAIN, 14)    # ตัวพื้น
+BOLD_FONT   = Font("SansSerif", Font.BOLD, 14)     # ตัวหนา
+HEADER_FONT = Font("SansSerif", Font.BOLD, 18)     # หัวข้อใหญ่
+MONO_FONT   = Font("Monospaced", Font.PLAIN, 14)   # โมโนสเปซ
 
-# ====== UTILS ======
+# =========================
+# CONFIG
+# =========================
+SAVE_DIR = "/home/kali/thesis/alert_dump"
+RESULT_PREFIX = "alert"       # => alert_YYYYMMDD_HHMMSS.json
+SCAN_LIMIT = 20               # max URLs to send to ZAP
+
+# ---- ZAP toggle (ตั้งค่า True เพื่อสแกนด้วย ZAP, False เพื่อข้าม) ----
+ENABLE_ZAP = True
+ZAP_BASE   = "http://127.0.0.1:8088"
+ZAP_APIKEY = "4b4cqkmda9nqgjjcrdoflv79fn"
+ZAP_TIMEOUT= 120
+
+# =========================
+# UTILS
+# =========================
 def ensure_dir(path):
     try:
         if not os.path.isdir(path):
@@ -52,7 +80,6 @@ def is_url(s):
     return s.startswith("http://") or s.startswith("https://")
 
 def add_scheme_if_needed(host, preferred_scheme="https"):
-    """เติมแค่ scheme เดียว (ไม่ใส่ทั้ง http/https เพื่อลดซ้ำ)"""
     h = "%s" % host
     if h.startswith("http://") or h.startswith("https://"):
         return [h]
@@ -60,15 +87,8 @@ def add_scheme_if_needed(host, preferred_scheme="https"):
         h += "/"
     return ["%s://%s" % (preferred_scheme, h)]
 
-# --- origin normalizer ---
 from urlparse import urlparse
 def normalize_origin(u):
-    """
-    ให้ค่าเป็น origin เดียว: scheme://host[:port]/
-    - lowercase scheme/host
-    - ตัดพอร์ตดีฟอลต์ (http:80, https:443)
-    - บังคับปิดด้วย '/'
-    """
     try:
         p = urlparse(u)
         scheme = (p.scheme or "http").lower()
@@ -93,14 +113,8 @@ def host_from_url(u):
 
 def extract_urls_from_recon_json(text, user_input, preferred_scheme="https"):
     """
-    รองรับหลายรูปแบบของ recon.py:
-      {
-        "target": "http://example.com/",
-        "subdomains": ["a.example.com","https://b.example.com/"],
-        "ports": [],  # หรือ [{"host":"example.com","port":8080}]
-        "endpoints": [{"url":"http://example.com/login","status_code":200}]
-      }
-    คืนค่าเป็นลิสต์ของ unique origins ที่ normalize แล้ว
+    ดึง URL/ออริจินจากผล recon (รองรับ keys: target, subdomains, ports, endpoints)
+    คืนค่าลิสต์ origins (scheme://host[:port]/) แบบ unique
     """
     raw_urls = []
     try:
@@ -156,7 +170,7 @@ def extract_urls_from_recon_json(text, user_input, preferred_scheme="https"):
         except Exception:
             pass
 
-    # Normalize + unique origin
+    # Normalize + unique
     seen, uniq = set(), []
     for u in raw_urls:
         nu = normalize_origin(u)
@@ -165,106 +179,346 @@ def extract_urls_from_recon_json(text, user_input, preferred_scheme="https"):
             uniq.append(nu)
     return uniq
 
-# ====== UI ======
+# =========================
+# TABLE RENDERING
+# =========================
+TABLE_COLUMNS = ["Risk", "Alert", "URL", "CWE", "Parameter", "Attack"]
+
+def alerts_to_rows(alerts):
+    rows = []
+    for a in (alerts or []):
+        try:
+            risk   = a.get("risk", "") or a.get("riskcode", "")
+            alert  = a.get("alert", "")
+            url    = a.get("url", a.get("_scanned_url", ""))
+            cwe    = a.get("cweid", "")
+            param  = a.get("param", "")
+            attack = a.get("attack", "")
+            rows.append([risk, alert, url, cwe, param, attack])
+        except Exception:
+            pass
+    return rows
+
+_RISK_ORDER = {
+    "High": 3, "Medium": 2, "Low": 1, "Informational": 0, "Info": 0, "": -1, None: -1
+}
+
+class RiskComparator(Comparator):
+    def compare(self, a, b):
+        av = _RISK_ORDER.get(str(a), _RISK_ORDER.get(a, -1))
+        bv = _RISK_ORDER.get(str(b), _RISK_ORDER.get(b, -1))
+        return (av > bv) - (av < bv)
+
+class IntLikeComparator(Comparator):
+    def compare(self, a, b):
+        def to_int(x):
+            try:
+                return int(str(x).strip())
+            except:
+                return None
+        ai, bi = to_int(a), to_int(b)
+        if ai is not None and bi is not None:
+            return (ai > bi) - (ai < bi)
+        sa, sb = ("" if a is None else str(a)), ("" if b is None else str(b))
+        return (sa > sb) - (sa < sb)
+
+# =========================
+# UI HELPERS
+# =========================
+def join_lines(items, bullet=False):
+    out = []
+    for x in (items or []):
+        if x is None:
+            continue
+        s = "%s" % x
+        if s.strip():
+            out.append(("- " if bullet else "") + s.strip())
+    return "\n".join(out) if out else "-"
+
+def make_box(title):
+    box = JPanel(GridBagLayout())
+    box.setBorder(BorderFactory.createTitledBorder(title))
+    return box
+
+def add_g(panel, comp, x, y, w=1, h=1, wx=0.0, wy=0.0,
+          fill=GridBagConstraints.BOTH,
+          inset=Insets(6,6,6,6),
+          anchor=GridBagConstraints.CENTER):
+    c = GridBagConstraints()
+    c.gridx = x; c.gridy = y; c.gridwidth = w; c.gridheight = h
+    c.weightx = wx; c.weighty = wy; c.fill = fill; c.insets = inset; c.anchor = anchor
+    panel.add(comp, c)
+
+def mk_readonly_text(rows=10, cols=24, mono=True, size=14):
+    ta = JTextArea(rows, cols)
+    ta.setEditable(False)
+    ta.setFont(Font("Monospaced" if mono else "SansSerif", Font.PLAIN, size))
+    return ta
+
+# =========================
+# MAIN PANEL
+# =========================
 def create_panel():
     panel = JPanel()
     layout = GridBagLayout()
     panel.setLayout(layout)
     c = GridBagConstraints()
 
-    # Label
+    # Row 0: Label + Input + Button
     c.gridx = 0; c.gridy = 0
-    c.anchor = c.WEST
+    c.weightx = 0.0
     c.insets = Insets(10, 10, 5, 5)
-    panel.add(JLabel("Target (domain or URL):"), c)
+    c.anchor = c.WEST
+    label_target = JLabel("Target (domain or URL):")
+    label_target.setFont(BASE_FONT)
+    panel.add(label_target, c)
 
-    # Input
-    url_field = JTextField(30)
-    c.gridx = 1
+    url_field = JTextField(36)
+    url_field.setFont(BASE_FONT)
+    c.gridx = 1; c.gridy = 0
     c.weightx = 1.0
     c.fill = c.HORIZONTAL
-    c.gridwidth = 1
     panel.add(url_field, c)
 
-    # Output area
-    output_area = JTextArea(18, 60)
-    output_area.setEditable(False)
-    output_area.setFocusable(False)
-    scroll = JScrollPane(output_area)
+    scan_button = JButton("Scan")
+    scan_button.setFont(BOLD_FONT)
+    scan_button.setPreferredSize(Dimension(120, 28))
+    c.gridx = 2; c.gridy = 0
+    c.weightx = 0.0
+    c.fill = GridBagConstraints.NONE
+    c.insets = Insets(10, 8, 5, 10)
+    panel.add(scan_button, c)
+
+    # Row 1: Status + Progress
+    status_label = JLabel("Idle.")
+    status_label.setFont(BASE_FONT)
     c.gridx = 0; c.gridy = 1
+    c.gridwidth = 1
+    c.insets = Insets(0, 10, 5, 5)
+    c.anchor = c.WEST
+    panel.add(status_label, c)
+
+    progress = JProgressBar()
+    progress.setIndeterminate(False)
+    progress.setPreferredSize(Dimension(180, 16))
+    c.gridx = 1; c.gridy = 1
+    c.gridwidth = 2
+    c.weightx = 1.0
+    c.fill = c.HORIZONTAL
+    c.insets = Insets(0, 5, 5, 10)
+    panel.add(progress, c)
+
+    # Row 2: Tabs
+    tabs = JTabbedPane()
+
+    # ===== Summary tab =====
+    summary_panel = JPanel(GridBagLayout())
+    summary_wrapper = JPanel(GridBagLayout())
+    summary_wrapper.setBorder(BorderFactory.createEmptyBorder(10,10,10,10))
+
+    header = JLabel("target URL : -")
+    header.setFont(HEADER_FONT)
+    add_g(summary_wrapper, header, 0, 0, w=2, wx=1.0, fill=GridBagConstraints.HORIZONTAL)
+
+    # Left column
+    sub_box = make_box("Subdomains")
+    sub_area = mk_readonly_text(10, 28, mono=True, size=14)
+    add_g(sub_box, JScrollPane(sub_area), 0, 0, wx=1.0, wy=1.0)
+
+    port_box = make_box("Ports")
+    port_area = mk_readonly_text(6, 28, mono=True, size=14)
+    add_g(port_box, JScrollPane(port_area), 0, 0, wx=1.0, wy=1.0)
+
+    left_col = JPanel(GridBagLayout())
+    add_g(left_col, sub_box, 0, 0, wx=1.0, wy=1.0)
+    add_g(left_col, port_box, 0, 1, wx=1.0, wy=0.6)
+
+    # Right column
+    status_box = make_box("Status")
+    status_area = mk_readonly_text(8, 36, mono=False, size=14)
+    add_g(status_box, JScrollPane(status_area), 0, 0, wx=1.0, wy=0.5)
+
+    endp_box = make_box("Endpoints")
+    endp_area = mk_readonly_text(10, 36, mono=True, size=14)
+    add_g(endp_box, JScrollPane(endp_area), 0, 0, wx=1.0, wy=1.0)
+
+    right_col = JPanel(GridBagLayout())
+    add_g(right_col, status_box, 0, 0, wx=1.0, wy=0.4)
+    add_g(right_col, endp_box, 0, 1, wx=1.0, wy=1.0)
+
+    add_g(summary_wrapper, left_col, 0, 1, wx=0.5, wy=1.0)
+    add_g(summary_wrapper, right_col, 1, 1, wx=0.5, wy=1.0)
+
+    for box in (sub_box, port_box, status_box, endp_box):
+        bd = box.getBorder()
+        if isinstance(bd, TitledBorder):
+            bd.setTitleFont(BOLD_FONT)
+
+    add_g(summary_panel, summary_wrapper, 0, 0, wx=1.0, wy=1.0)
+    tabs.addTab("Summary", summary_panel)
+
+    # ===== Scan Results tab =====
+    table_model = DefaultTableModel(TABLE_COLUMNS, 0)
+    table = JTable(table_model)
+    table.setFont(BASE_FONT)
+    table.setRowHeight(22)
+    table.getTableHeader().setFont(BOLD_FONT)
+    table.setAutoResizeMode(JTable.AUTO_RESIZE_LAST_COLUMN)
+    table.getColumnModel().getColumn(0).setPreferredWidth(60)
+    table.getColumnModel().getColumn(1).setPreferredWidth(220)
+    table.getColumnModel().getColumn(2).setPreferredWidth(340)
+    table.getColumnModel().getColumn(3).setPreferredWidth(60)
+    table.getColumnModel().getColumn(4).setPreferredWidth(120)
+    table.getColumnModel().getColumn(5).setPreferredWidth(160)
+    table_scroll = JScrollPane(table)
+    tabs.addTab("Scan Results", table_scroll)
+
+    sorter = TableRowSorter(table_model)
+    sorter.setComparator(0, RiskComparator())     # Risk: High > Medium > Low > Info
+    sorter.setComparator(3, IntLikeComparator())  # CWE: ตัวเลขมาก/น้อย
+    table.setRowSorter(sorter)
+
+    c.gridx = 0; c.gridy = 2
     c.gridwidth = 3
-    c.weighty = 1.0
+    c.weightx = 1.0; c.weighty = 1.0
     c.fill = c.BOTH
-    c.insets = Insets(10, 10, 5, 10)
-    panel.add(scroll, c)
+    c.insets = Insets(8, 10, 10, 10)
+    panel.add(tabs, c)
 
-    def on_scan_click(event):
-        def worker():
-            if zap_client is None:
-                output_area.setText("[!] Cannot import zap_client.py: %s\n" % str(_ZAP_IMPORT_ERROR))
-                output_area.append("    - Check zap_client.py is in the same folder.\n")
-                return
+    # ---------- Worker helpers ----------
+    def set_busy(b):
+        progress.setIndeterminate(b)
+        scan_button.setEnabled(not b)
 
-            target_input = url_field.getText().strip()
-            if not target_input:
-                output_area.setText("Please enter target.\n")
-                return
+    def show_status(text):
+        status_label.setText(text)
 
-            output_area.setText("Running recon...\n")
+    def set_summary_header(text):
+        header.setText("target URL : %s" % (text or "-"))
 
-            env = os.environ.copy()
-            env["PATH"] = os.path.expanduser("~/go/bin") + os.pathsep + env.get("PATH", "")
+    def set_status_lines(lines):
+        if isinstance(lines, (list, tuple)):
+            status_area.setText("\n".join(lines))
+        else:
+            status_area.setText("%s" % (lines or ""))
+
+    def render_summary_from_recon(recon_obj, input_text, targets):
+        set_summary_header(input_text or (targets[0] if targets else "-"))
+
+        subs = []
+        try:
+            for s in (recon_obj.get("subdomains") or []):
+                subs.append("%s" % s)
+        except Exception:
+            pass
+        sub_area.setText(join_lines(subs, bullet=True))
+
+        ports_lines = []
+        try:
+            ports = recon_obj.get("ports") or []
+            for p in ports:
+                if isinstance(p, dict):
+                    host = p.get("host") or p.get("ip") or "-"
+                    port = p.get("port") or p.get("value") or "-"
+                    ports_lines.append("%s : %s" % (host, port))
+                else:
+                    ports_lines.append("%s" % p)
+        except Exception:
+            pass
+        port_area.setText(join_lines(ports_lines, bullet=True))
+
+        eps = []
+        try:
+            for e in (recon_obj.get("endpoints") or []):
+                u = (e.get("url") or "").strip()
+                sc = e.get("status_code")
+                if u:
+                    eps.append(u if sc is None else "%s  (%s)" % (u, sc))
+        except Exception:
+            pass
+        if not eps and targets:
+            eps = targets
+        endp_area.setText(join_lines(eps, bullet=False))
+
+    def append_status(msg):
+        prev = status_area.getText().strip()
+        status_area.setText((prev + "\n" if prev else "") + ("%s" % msg))
+
+    # ---------- Main worker ----------
+    def run_scan(target_input):
+        """
+        1) run recon.py
+        2) extract URLs -> targets
+        3) (optional) scan with ZAP
+        4) save JSON
+        5) update Summary + Table
+        """
+        if zap_client is None:
+            JOptionPane.showMessageDialog(panel, "[!] Cannot import zap_client.py:\n%s" % str(_ZAP_IMPORT_ERROR))
+            return
+
+        if not target_input:
+            JOptionPane.showMessageDialog(panel, "Please enter target.")
+            return
+
+        set_busy(True)
+        show_status("Running recon...")
+        set_summary_header(target_input)
+        set_status_lines(["recon ongoing", "scan waiting...", "result waiting..."])
+
+        env = os.environ.copy()
+        env["PATH"] = os.path.expanduser("~/go/bin") + os.pathsep + env.get("PATH", "")
+
+        try:
+            # 1) recon
+            cmd = "python3 recon.py " + safe_quote(target_input)
+            process = subprocess.Popen(
+                cmd, shell=True,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env
+            )
+            stdout, _ = process.communicate()
+            text = stdout.decode("utf-8", "ignore")
 
             try:
-                # 1) run recon
-                cmd = "python3 recon.py " + safe_quote(target_input)
-                output_area.append("$ %s\n" % cmd)
-                process = subprocess.Popen(
-                    cmd, shell=True,
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env
-                )
-                stdout, _ = process.communicate()
-                text = stdout.decode("utf-8", "ignore")
-                output_area.append(text + "\n")
+                recon_obj = json.loads(text)
+            except Exception:
+                recon_obj = {"raw_text": text}
 
-                # parse recon JSON (ถ้า parse ไม่ได้จะเก็บ raw_text)
-                recon_obj = None
-                try:
-                    recon_obj = json.loads(text)
-                except Exception:
-                    recon_obj = {"raw_text": text}
+            preferred = "https"
+            if is_url(target_input):
+                preferred = (target_input.split(":", 1)[0] or "https").lower()
 
-                # Determine preferred scheme from input
-                preferred = "https"
-                if is_url(target_input):
-                    preferred = (target_input.split(":", 1)[0] or "https").lower()
+            # 2) collect URLs
+            targets = extract_urls_from_recon_json(text, target_input, preferred_scheme=preferred)
+            if not targets:
+                raw = re.findall(r'https?://[^\s"<>]+', text)
+                seen = set(); targets = []
+                for u in raw:
+                    nu = normalize_origin(u)
+                    if nu and nu not in seen:
+                        seen.add(nu)
+                        targets.append(nu)
 
-                # 2) collect URLs (unique origins)
-                targets = extract_urls_from_recon_json(text, target_input, preferred_scheme=preferred)
-                if not targets:
-                    # fallback: regex + normalize
-                    raw = re.findall(r'https?://[^\s"<>]+', text)
-                    seen = set(); targets = []
-                    for u in raw:
-                        nu = normalize_origin(u)
-                        if nu and nu not in seen:
-                            seen.add(nu)
-                            targets.append(nu)
+            render_summary_from_recon(recon_obj, target_input, targets)
+            append_status("recon done, %d target(s) prepared" % len(targets))
 
-                if not targets:
-                    output_area.append("[!] No URLs to scan.\n")
-                    return
+            if not targets:
+                show_status("No URLs to scan.")
+                set_busy(False)
+                return
 
-                # Apply limit and show true count
-                to_scan = targets[:SCAN_LIMIT]
-                output_area.append("[*] Sending %d URL(s) to ZAP (spider+recurse)...\n" % len(to_scan))
+            to_scan = targets[:SCAN_LIMIT]
 
-                # 3) ZAP deep-ish scan (spider then recurse)
+            # 3) ZAP scan (ตามสวิทช์ ENABLE_ZAP)
+            alerts = []
+            if ENABLE_ZAP:
+                show_status("Scanning %d URL(s) with ZAP..." % len(to_scan))
+                append_status("scan started with ZAP...")
                 try:
                     z = zap_client.ZapClient(
-                        base="http://127.0.0.1:8088",
-                        apikey="4b4cqkmda9nqgjjcrdoflv79fn",
-                        timeout=120
+                        base=ZAP_BASE,
+                        apikey=ZAP_APIKEY,
+                        timeout=ZAP_TIMEOUT
                     )
                     alerts = z.active_scan_urls(
                         to_scan,
@@ -274,47 +528,74 @@ def create_panel():
                         sleep=1.0
                     )
 
-                    # 4) save JSON bundle (UTF-8 + timestamp)
-                    ok, err = ensure_dir(SAVE_DIR)
-                    if not ok:
-                        output_area.append("[!] Cannot create dir %s: %s\n" % (SAVE_DIR, str(err)))
-                    else:
-                        bundle = {
-                            "meta": {
-                                "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                                "target_input": target_input,
-                                "preferred_scheme": preferred,
-                                "num_scan_targets": len(to_scan),
-                                "save_dir": SAVE_DIR
-                            },
-                            "recon": recon_obj,
-                            "scan_targets": to_scan,
-                            "zap_alerts": alerts
-                        }
-                        out_path = generate_timestamp_filename(SAVE_DIR, prefix=RESULT_PREFIX, ext=".json")
-                        try:
-                            with codecs.open(out_path, "w", "utf-8") as f:
-                                json.dump(bundle, f, ensure_ascii=False, indent=2)
-                            output_area.append("[+] Saved alerts JSON -> %s\n" % out_path)
-                        except Exception as e:
-                            output_area.append("[!] Cannot write JSON file: %s\n" % str(e))
+                    show_status("Done. Alerts: %d" % len(alerts))
+                    append_status("scan completed. alerts: %d" % len(alerts))
 
-                    output_area.append("[+] Done. Total alerts: %d\n" % len(alerts))
+                    # เติม endpoints จากผลสแกน (เผื่อ recon ไม่มี)
+                    try:
+                        ep_urls = []
+                        seen_ep = set()
+                        for a in (alerts or []):
+                            u = a.get("url") or a.get("_scanned_url")
+                            if u and (u not in seen_ep):
+                                seen_ep.add(u)
+                                ep_urls.append(u)
+                        if ep_urls:
+                            endp_area.setText("\n".join(ep_urls))
+                            append_status("endpoints populated from ZAP alerts: %d" % len(ep_urls))
+                    except Exception:
+                        pass
+
                 except Exception as e:
-                    output_area.append("[!] ZAP error: %s\n" % str(e))
+                    show_status("ZAP error")
+                    append_status("ZAP error: %s" % str(e))
+            else:
+                append_status("ZAP disabled (ENABLE_ZAP=False). Skipping active scan.")
+                show_status("Recon done. ZAP skipped.")
 
-            except Exception as e:
-                output_area.append("Error: " + str(e) + "\n")
+            # 4) save bundle JSON
+            ok, err = ensure_dir(SAVE_DIR)
+            bundle = {
+                "meta": {
+                    "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "target_input": target_input,
+                    "preferred_scheme": preferred,
+                    "num_scan_targets": len(to_scan),
+                    "save_dir": SAVE_DIR,
+                    "zap_enabled": ENABLE_ZAP
+                },
+                "recon": recon_obj,
+                "scan_targets": to_scan,
+                "zap_alerts": alerts
+            }
+            if not ok:
+                append_status("cannot create dir: %s" % str(err))
+            else:
+                out_path = generate_timestamp_filename(SAVE_DIR, prefix=RESULT_PREFIX, ext=".json")
+                try:
+                    with codecs.open(out_path, "w", "utf-8") as f:
+                        json.dump(bundle, f, ensure_ascii=False, indent=2)
+                    append_status("saved: %s" % out_path)
+                except Exception as e:
+                    append_status("cannot write JSON: %s" % str(e))
 
-        Thread(target=worker).start()
+            # 5) fill table (ถ้า ZAP ถูกปิด ตารางก็จะว่าง—which is expected)
+            while table_model.getRowCount() > 0:
+                table_model.removeRow(0)
+            for row in alerts_to_rows(alerts):
+                table_model.addRow(row)
 
-    # Button
-    button = JButton("Scan", actionPerformed=on_scan_click)
-    button.setPreferredSize(Dimension(120, 28))
-    c.gridx = 2; c.gridy = 0
-    c.weightx = 0
-    c.fill = GridBagConstraints.NONE
-    c.insets = Insets(10, 5, 5, 10)
-    panel.add(button, c)
+        except Exception as e:
+            show_status("Error")
+            append_status("error: %s" % str(e))
+        finally:
+            set_busy(False)
+
+    # Button action
+    def on_scan_click(event):
+        target_input = url_field.getText().strip()
+        Thread(target=lambda: run_scan(target_input)).start()
+
+    scan_button.actionPerformed = on_scan_click
 
     return panel
