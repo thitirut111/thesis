@@ -536,21 +536,6 @@ def create_panel():
                     show_status("Done. Alerts: %d" % len(alerts))
                     append_status("scan completed. alerts: %d" % len(alerts))
 
-                    # เติม endpoints จากผลสแกน (เผื่อ recon ไม่มี)
-                    try:
-                        ep_urls = []
-                        seen_ep = set()
-                        for a in (alerts or []):
-                            u = a.get("url") or a.get("_scanned_url")
-                            if u and (u not in seen_ep):
-                                seen_ep.add(u)
-                                ep_urls.append(u)
-                        if ep_urls:
-                            endp_area.setText("\n".join(ep_urls))
-                            append_status("endpoints populated from ZAP alerts: %d" % len(ep_urls))
-                    except Exception:
-                        pass
-
                 except Exception as e:
                     show_status("ZAP error")
                     append_status("ZAP error: %s" % str(e))
