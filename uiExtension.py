@@ -464,7 +464,7 @@ def create_panel():
         set_busy(True)
         show_status("Running recon...")
         set_summary_header(target_input)
-        set_status_lines(["recon ongoing", "scan waiting...", "result waiting..."])
+        set_status_lines(["recon ongoing"])
 
         env = os.environ.copy()
         env["PATH"] = os.path.expanduser("~/go/bin") + os.pathsep + env.get("PATH", "")
@@ -474,14 +474,19 @@ def create_panel():
             cmd = "python3 recon.py " + safe_quote(target_input)
             process = subprocess.Popen(
                 cmd, shell=True,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env # <--- แยก stderr
             )
-            stdout, _ = process.communicate()
+            stdout, stderr = process.communicate() # <--- รับผลลัพธ์ 2 ทาง
+
+            # text คือผลลัพธ์ JSON ที่สะอาด
             text = stdout.decode("utf-8", "ignore")
 
             try:
                 recon_obj = json.loads(text)
-            except Exception:
+                append_status("Got JSON from recon")  # <--- เพิ่มบรรทัดนี้
+            except Exception as e:
+                # (แนะนำ) เพิ่มสถานะเมื่อ JSON ล้มเหลวด้วย
+                append_status("JSON parse failed") 
                 recon_obj = {"raw_text": text}
 
             preferred = "https"
