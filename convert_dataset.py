@@ -48,11 +48,13 @@ def to_dataset_record(a: Dict[str, Any]) -> Dict[str, str]:
 
     # Observed เอา other > description > solution
     observed   = first_nonempty(a.get("other"), a.get("description"), a.get("solution"))
+    header = normalize_line(a.get("responseHeader"), fallback="(no header data)")
 
     input_block = (
         f"Alert: {normalize_line(alert_name, '(unspecified)')} on {normalize_line(url, '(unknown URL)')}\n"
         f"Evidence: {normalize_line(evidence)}\n"
         f"Observed: {normalize_line(observed)}"
+        f"Response Header: {header}\n"
     )
 
     return {
