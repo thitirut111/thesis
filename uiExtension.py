@@ -514,31 +514,69 @@ def create_panel():
 
             to_scan = targets[:SCAN_LIMIT]
 
-            # 3) ZAP scan (ตามสวิทช์ ENABLE_ZAP)
+            # 3) ZAP scan (Auto-Start Logic)
             alerts = []
             if ENABLE_ZAP:
-                show_status("Scanning %d URL(s) with ZAP..." % len(to_scan))
-                append_status("scan started with ZAP...")
+                show_status("Checking ZAP status...")
+                
+                # --- ส่วนที่เพิ่ม: เช็คว่า ZAP เปิดอยู่ไหม ถ้าไม่เปิดให้สั่งเปิด ---
+                z_conn = zap_client.ZapClient(base=ZAP_BASE, apikey=ZAP_APIKEY, timeout=5)
+                zap_is_up = False
+                
                 try:
-                    z = zap_client.ZapClient(
-                        base=ZAP_BASE,
-                        apikey=ZAP_APIKEY,
-                        timeout=ZAP_TIMEOUT
-                    )
-                    alerts = z.active_scan_urls(
-                        to_scan,
-                        spider_first=True,
-                        recurse=True,
-                        limit=SCAN_LIMIT,
-                        sleep=1.0
-                    )
+                    # ลอง Ping ดูว่า ZAP อยู่ไหม
+                    v = z_conn.version()
+                    append_status("ZAP is already running (v%s)" % v)
+                    zap_is_up = True
+                except Exception:
+                    # ถ้า Error แปลว่ายังไม่เปิด -> สั่งเปิดเลย!
+                    append_status("ZAP is offline. Auto-starting daemon...")
+                    try:
+                        zap_client.start_zap_daemon()
+                        
+                        # รอให้ ZAP บูตเสร็จ (วนลูปเช็คทุก 2 วิ นานสุด 60 วิ)
+                        show_status("Booting ZAP (please wait ~20s)...")
+                        for i in range(30): 
+                            time.sleep(2)
+                            try:
+                                z_conn.version()
+                                zap_is_up = True
+                                append_status("ZAP started successfully!")
+                                break
+                            except Exception:
+                                pass # ยังบูตไม่เสร็จ รอต่อ
+                    except Exception as e:
+                        append_status("Failed to auto-start ZAP: %s" % str(e))
 
-                    show_status("Done. Alerts: %d" % len(alerts))
-                    append_status("scan completed. alerts: %d" % len(alerts))
+                # --- จบส่วน Auto-Start ---
 
-                except Exception as e:
-                    show_status("ZAP error")
-                    append_status("ZAP error: %s" % str(e))
+                if zap_is_up:
+                    show_status("Scanning %d URL(s) with ZAP..." % len(to_scan))
+                    append_status("scan started with ZAP...")
+                    try:
+                        # สร้าง Client ใหม่ (เผื่อ timeout)
+                        z = zap_client.ZapClient(
+                            base=ZAP_BASE,
+                            apikey=ZAP_APIKEY,
+                            timeout=ZAP_TIMEOUT
+                        )
+                        alerts = z.active_scan_urls(
+                            to_scan,
+                            spider_first=True,
+                            recurse=True,
+                            limit=SCAN_LIMIT,
+                            sleep=1.0
+                        )
+
+                        show_status("Done. Alerts: %d" % len(alerts))
+                        append_status("scan completed. alerts: %d" % len(alerts))
+
+                    except Exception as e:
+                        show_status("ZAP error")
+                        append_status("ZAP error: %s" % str(e))
+                else:
+                    show_status("Skipping ZAP (Connection failed)")
+                    append_status("Could not connect to ZAP after waiting.")
             else:
                 append_status("ZAP disabled (ENABLE_ZAP=False). Skipping active scan.")
                 show_status("Recon done. ZAP skipped.")

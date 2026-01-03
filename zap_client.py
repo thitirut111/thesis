@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 # zap_client.py
 from __future__ import print_function
-import json, time
+import json, time, subprocess, sys, os
 
 try:
     from urllib.parse import urlencode
@@ -9,6 +9,27 @@ try:
 except ImportError:
     from urllib import urlencode
     from urllib2 import urlopen, Request, build_opener, ProxyHandler
+
+# ==========================================
+# ส่วนตั้งค่า (Configuration)
+# ==========================================
+# ตรวจสอบ OS: ถ้าเป็น Windows ใช้ path นึง, Linux ใช้อีก path
+if os.name == 'nt':
+    # ตัวอย่าง path ของ Windows (แก้ได้ถ้าติดตั้งที่อื่น)
+    ZAP_PATH = r"C:\Program Files\OWASP\Zed Attack Proxy\zap.bat"
+else:
+    # Linux / Kali
+    ZAP_PATH = "/usr/bin/zaproxy"
+
+ZAP_PORT = "8088"
+ZAP_HOST = "0.0.0.0"
+API_KEY = "4b4cqkmda9nqgjjcrdoflv79fn"
+
+# Helper สำหรับ DEVNULL ใน Python 2
+try:
+    from subprocess import DEVNULL
+except ImportError:
+    DEVNULL = open(os.devnull, 'wb')
 
 class ZapError(Exception):
     pass
@@ -28,7 +49,8 @@ class ZapClient(object):
 
     def _get_json(self, path, params):
         if self.apikey:
-            params = dict(params or {}); params["apikey"] = self.apikey
+            params = dict(params or {})
+            params["apikey"] = self.apikey
         qs = urlencode(params or {})
         url = "%s%s?%s" % (self.base, path, qs)
         req = Request(url)
@@ -91,22 +113,28 @@ class ZapClient(object):
             "url": url, "start": str(start), "count": str(count)
         })
         return res.get("alerts", [])
-
+        
     def alerts_for_base(self, baseurl, start=0, count=9999):
-        # ดึง alert ทั้ง tree ของ base URL
         res = self._get_json("/JSON/core/view/alerts/", {
             "baseurl": baseurl, "start": str(start), "count": str(count)
         })
         return res.get("alerts", [])
 
+    def get_message(self, messageId):
+        try:
+            res = self._get_json("/JSON/core/view/message/", {"id": str(messageId)})
+            return res.get("message", {})
+        except Exception:
+            return {}
+
     # ---------- helpers ----------
     def active_scan_urls(self, urls, spider_first=False, recurse=False, limit=None, sleep=1.0):
-        """สแกนทีละ URL; ถ้า recurse=True จะดึงผลด้วย alerts_for_base"""
         out = []
         uniq, seen = [], set()
         for u in urls:
             if u not in seen:
-                uniq.append(u); seen.add(u)
+                uniq.append(u)
+                seen.add(u)
         if limit:
             uniq = uniq[:limit]
 
@@ -120,16 +148,86 @@ class ZapClient(object):
                 sid = self.start_ascan(u, recurse=recurse)
                 self.wait_ascan(sid, sleep=sleep)
 
-                # ถ้า recurse → ดึงผลทั้ง base tree; ถ้าไม่ → ดึงเฉพาะ URL
                 if recurse:
                     alerts = self.alerts_for_base(u)
                 else:
                     alerts = self.alerts_for_url(u)
 
+                print("   -> alerts found:", len(alerts))
                 for a in alerts:
                     a["_scanned_url"] = u
-                print("   -> alerts:", len(alerts))
-                out.extend(alerts)
+                    try:
+                        msg_id = a.get("messageId")
+                        if msg_id:
+                            msg_data = self.get_message(msg_id)
+                            a["responseHeader"] = msg_data.get("responseHeader")
+                    except Exception as e:
+                        print("   ! could not fetch raw msg: %s" % e)
+                    out.append(a)
             except Exception as e:
                 print("   ! error:", e)
         return out
+
+# ==========================================
+# ฟังก์ชันสำหรับเริ่ม ZAP (subprocess)
+# ==========================================
+def start_zap_daemon():
+    """
+    รันคำสั่ง Shell เพื่อเปิด ZAP (รองรับ Python 2.7 / Jython)
+    """
+    cmd = [
+        ZAP_PATH,
+        "-daemon",
+        "-port", ZAP_PORT,
+        "-host", ZAP_HOST,
+        "-config", "api.key={}".format(API_KEY),
+        "-config", "api.addrs.addr.name=.*",
+        "-config", "api.addrs.addr.regex=true"
+    ]
+    
+    print("[*] Starting ZAP Daemon...")
+    print("    Command: " + " ".join(cmd))
+    
+    try:
+        # ใช้ DEVNULL ที่ประกาศไว้ข้างบน (รองรับทั้ง py2/py3)
+        proc = subprocess.Popen(cmd, stdout=DEVNULL, stderr=DEVNULL)
+        return proc
+    except OSError as e: # ใช้ OSError แทน FileNotFoundError ใน Python 2
+        print("[X] Error starting ZAP: {}".format(e))
+        # ถ้าหาไฟล์ไม่เจอ ให้แจ้ง User
+        if getattr(e, 'errno', None) == 2: # errno 2 = No such file or directory
+             print("    Hint: Check if path '{}' is correct.".format(ZAP_PATH))
+        raise
+
+# ==========================================
+# Main Execution
+# ==========================================
+if __name__ == "__main__":
+    zap_process = None
+    try:
+        zap_process = start_zap_daemon()
+        print("[*] Waiting 20 seconds for ZAP to boot...")
+        time.sleep(20) 
+
+        print("[*] Connecting to ZAP API...")
+        client = ZapClient(
+            base="http://127.0.0.1:{}".format(ZAP_PORT), 
+            apikey=API_KEY
+        )
+
+        version = client.version()
+        print("[+] Connected! ZAP Version: {}".format(version))
+
+    except KeyboardInterrupt:
+        print("\n[!] User aborted.")
+    except Exception as e:
+        print("\n[X] Error occured: {}".format(e))
+    finally:
+        if zap_process:
+            print("[*] Shutting down ZAP...")
+            try:
+                zap_process.terminate()
+                zap_process.wait()
+            except:
+                pass
+            print("[*] ZAP Stopped.")
