@@ -161,6 +161,7 @@ class ZapClient(object):
                         if msg_id:
                             msg_data = self.get_message(msg_id)
                             a["responseHeader"] = msg_data.get("responseHeader")
+                            a["requestHeader"]  = msg_data.get("requestHeader")
                     except Exception as e:
                         print("   ! could not fetch raw msg: %s" % e)
                     out.append(a)
