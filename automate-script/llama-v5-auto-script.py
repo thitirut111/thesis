@@ -115,7 +115,6 @@ def predict_and_evaluate():
         total += 1
 
         results.append({
-            "actual": actual_label,
             "predicted": pred_label,
             "reasoning": reasoning,
             "full_response": response # เก็บไว้ดู Debug
