@@ -12,7 +12,7 @@ class BurpExtender(IBurpExtender, ITab):
         self._helpers = callbacks.getHelpers()
 
         # ตั้งชื่อ Extension ใน Burp
-        callbacks.setExtensionName("Thesis")
+        callbacks.setExtensionName("AutoPT")
 
 	# ใช้งานฟังก์ชันจาก uiExtension.py
         self._panel = uiExtension.create_panel()
