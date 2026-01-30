@@ -44,5 +44,5 @@ def convert_input_to_jsonl(input_json_path: str, output_jsonl_path: str):
 if __name__ == "__main__":
     convert_input_to_jsonl(
         input_json_path=r"E:\thesis\automate-script\input.json",
-        output_jsonl_path=r"E:\thesis\automate-script\output-new.jsonl"
+        output_jsonl_path=r"E:\thesis\automate-script\befAI.jsonl"
     )
