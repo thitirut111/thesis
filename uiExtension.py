@@ -182,7 +182,7 @@ def extract_urls_from_recon_json(text, user_input, preferred_scheme="https"):
 # =========================
 # TABLE RENDERING
 # =========================
-TABLE_COLUMNS = ["Risk", "Alert", "URL", "CWE", "Parameter", "Attack"]
+TABLE_COLUMNS = ["Risk", "Alert", "URL", "CWE", "Parameter", "Attack", "aiLabel", "aiReason"]
 
 def alerts_to_rows(alerts):
     rows = []
@@ -194,7 +194,9 @@ def alerts_to_rows(alerts):
             cwe    = a.get("cweid", "")
             param  = a.get("param", "")
             attack = a.get("attack", "")
-            rows.append([risk, alert, url, cwe, param, attack])
+            aiLabel = a.get("aiLabel", "")
+            aiReason= a.get("aiReason", "")
+            rows.append([risk, alert, url, cwe, param, attack, aiLabel, aiReason])
         except Exception:
             pass
     return rows
@@ -363,16 +365,20 @@ def create_panel():
     table.setFont(BASE_FONT)
     table.setRowHeight(22)
     table.getTableHeader().setFont(BOLD_FONT)
-    table.setAutoResizeMode(JTable.AUTO_RESIZE_LAST_COLUMN)
-    table.getColumnModel().getColumn(0).setPreferredWidth(60)
-    table.getColumnModel().getColumn(1).setPreferredWidth(220)
-    table.getColumnModel().getColumn(2).setPreferredWidth(340)
-    table.getColumnModel().getColumn(3).setPreferredWidth(60)
-    table.getColumnModel().getColumn(4).setPreferredWidth(120)
-    table.getColumnModel().getColumn(5).setPreferredWidth(160)
+
+    table.getColumnModel().getColumn(0).setPreferredWidth(60)   # Risk
+    table.getColumnModel().getColumn(1).setPreferredWidth(200)  # Alert
+    table.getColumnModel().getColumn(2).setPreferredWidth(300)  # URL
+    table.getColumnModel().getColumn(3).setPreferredWidth(60)   # CWE
+    table.getColumnModel().getColumn(4).setPreferredWidth(100)  # Param
+    table.getColumnModel().getColumn(5).setPreferredWidth(120)  # Attack
+    table.getColumnModel().getColumn(6).setPreferredWidth(80)   # aiLabel
+    table.getColumnModel().getColumn(7).setPreferredWidth(400)  # aiReason
     table_scroll = JScrollPane(table)
     tabs.addTab("Scan Results", table_scroll)
+    table.getTableHeader().setResizingAllowed(True)
 
+    table.setAutoResizeMode(JTable.AUTO_RESIZE_OFF)
     sorter = TableRowSorter(table_model)
     sorter.setComparator(0, RiskComparator())     # Risk: High > Medium > Low > Info
     sorter.setComparator(3, IntLikeComparator())  # CWE: ตัวเลขมาก/น้อย
@@ -547,6 +553,7 @@ def create_panel():
                                 pass # ยังบูตไม่เสร็จ รอต่อ
                     except Exception as e:
                         append_status("Failed to auto-start ZAP: %s" % str(e))
+            
 
                 # --- จบส่วน Auto-Start ---
 
@@ -581,6 +588,27 @@ def create_panel():
                 append_status("ZAP disabled (ENABLE_ZAP=False). Skipping active scan.")
                 show_status("Recon done. ZAP skipped.")
 
+            if alerts:
+                append_status("Saving alerts for ML pipeline...")
+                input_path = os.path.join(BASE_DIR, "input.json")
+
+                with codecs.open(input_path, "w", "utf-8") as f:
+                    json.dump(alerts, f, ensure_ascii=False, indent=2)
+
+                append_status("Running process.py...")
+
+                subprocess.run(
+                    [sys.executable, os.path.join(BASE_DIR, "process.py")],
+                    check=True
+                )
+
+                append_status("Reloading processed alerts...")
+
+                with codecs.open(input_path, "r", "utf-8") as f:
+                    alerts = json.load(f)
+
+                append_status("ML processing completed.")
+    
             # 4) save bundle JSON
             ok, err = ensure_dir(SAVE_DIR)
             bundle = {
